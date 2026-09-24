@@ -30,7 +30,7 @@ SANDBOX="$(mktemp -d)"
 export CLAUDE_HOOK_LOG_DIR="$SANDBOX/logs"
 export WORK_LOG_DIR="$SANDBOX/work-log"
 export COST_TRACKER_CSV="$SANDBOX/cost.csv"
-# shellcheck disable=SC2329  # invoked through the EXIT trap below
+# shellcheck disable=SC2317,SC2329  # invoked through the EXIT trap below
 cleanup() { rm -rf "$SANDBOX"; }
 trap cleanup EXIT
 
@@ -69,6 +69,14 @@ check() {
   local name="$1" hook="$2" fixture="$3" want_exit="$4" want_decision="$5"
   shift 5
 
+  if [ ! -f "$FIXTURES/$fixture" ]; then
+    FAIL=$((FAIL + 1))
+    FAILURES+=("$name")
+    printf '  \033[31mFAIL\033[0m  %-46s missing fixture: %s\n' "$name" "$fixture"
+    printf '        is it tracked? git check-ignore -v tests/hooks/fixtures/%s\n' "$fixture"
+    return
+  fi
+
   local out rc got_decision
   if [ "$#" -gt 0 ]; then
     out="$(event "$fixture" | env "$@" bash "$HOOKS/$hook" 2>"$SANDBOX/stderr")"
@@ -97,6 +105,12 @@ check() {
 # check_event_name <name> <hook> <fixture> <expected hookEventName>
 check_event_name() {
   local name="$1" hook="$2" fixture="$3" want="$4"
+  if [ ! -f "$FIXTURES/$fixture" ]; then
+    FAIL=$((FAIL + 1))
+    FAILURES+=("$name")
+    printf '  \033[31mFAIL\033[0m  %-46s missing fixture: %s\n' "$name" "$fixture"
+    return
+  fi
   local out rc got
   out="$(event "$fixture" | bash "$HOOKS/$hook" 2>/dev/null)"
   rc=$?

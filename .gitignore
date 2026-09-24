@@ -10,6 +10,10 @@
 *secret*
 .secrets.zsh
 
+# ...but the fixture that exercises secret detection has to be tracked.
+# It carries AWS's published example key, not a live credential.
+!tests/hooks/fixtures/write-secret-file.json
+
 # Real (non-example) local configs
 skills/browser-uat/configs/profiles.json
 settings.local.json
