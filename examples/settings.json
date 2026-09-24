@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "cleanupPeriodDays": 30,
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "300000",
+    "MAX_MCP_OUTPUT_TOKENS": "25000",
+    "OLLAMA_HOST": "http://127.0.0.1:11434"
+  },
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "WebSearch",
+      "WebFetch",
+      "Bash(git:*)",
+      "Bash(ls:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(du:*)",
+      "Bash(which:*)",
+      "Bash(echo:*)",
+      "Bash(pwd:*)",
+      "Bash(date:*)",
+      "Bash(tree:*)",
+      "Bash(jq:*)",
+      "Bash(gh:*)",
+      "Bash(cat:*)",
+      "Bash(diff:*)",
+      "Bash(file:*)",
+      "Bash(stat:*)",
+      "Bash(uv:*)",
+      "Bash(ruff:*)",
+      "Bash(mypy:*)",
+      "Bash(pyright:*)",
+      "Bash(pytest:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(npm:*)",
+      "Bash(pnpm:*)",
+      "Bash(npx:*)",
+      "Bash(node:*)",
+      "Bash(cargo:*)",
+      "Bash(docker:*)",
+      "Bash(docker-compose:*)",
+      "Bash(ollama:*)",
+      "Bash(curl http://127.0.0.1:*)",
+      "Bash(curl http://localhost:*)",
+      "Bash(curl:*)",
+      "Bash(httpie:*)",
+      "Bash(curator:*)",
+      "mcp__context7__*",
+      "mcp__fetch__*",
+      "mcp__git__*",
+      "mcp__context-curator__*"
+    ],
+    "deny": [
+      "Bash(sudo:*)",
+      "Bash(su :*)",
+      "Bash(/usr/bin/sudo:*)",
+      "Bash(doas :*)",
+      "Bash(pkexec:*)",
+      "Bash(chmod 777:*)",
+      "Bash(chmod -R 777:*)",
+      "Bash(:|:*)",
+      "Bash(mkfs:*)",
+      "Bash(dd if:*)",
+      "Bash(> /dev:*)",
+      "Bash(eval :*)",
+      "Bash(crontab:*)",
+      "Bash(nohup:*)",
+      "Bash(nc :*)",
+      "Bash(ncat:*)",
+      "Bash(socat:*)",
+      "Write(/etc/*)",
+      "Write(/usr/*)",
+      "Write(/System/*)",
+      "Write(/var/*)",
+      "Write(/bin/*)",
+      "Write(/sbin/*)",
+      "Write(~/.ssh/*)",
+      "Write(*.pem)",
+      "Write(*id_rsa*)",
+      "Write(*id_ed25519*)",
+      "Write(*.key)",
+      "Write(.env.production)",
+      "Write(*credentials*)",
+      "Write(*secret*)",
+      "Edit(~/.ssh/*)",
+      "Edit(*.pem)",
+      "Edit(*id_rsa*)",
+      "Edit(*id_ed25519*)",
+      "Edit(.env.production)",
+      "Edit(*credentials*)",
+      "Edit(*secret*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/scripts/session-start.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/scripts/write-guard.sh",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/scripts/bash-guard.sh",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/scripts/write-format.sh",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/scripts/bash-vuln.sh",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/scripts/work-log-commit.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/scripts/posttooluse-failure.sh",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/scripts/stop.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "effortLevel": "xhigh",
+  "theme": "dark-daltonized",
+  "mcpServers": {
+    "context-curator": {
+      "command": "python",
+      "args": [
+        "-m",
+        "curator.mcp_server"
+      ],
+      "cwd": "/path/to/context-curator",
+      "env": {
+        "CURATOR_MCP_HOST": "localhost",
+        "CURATOR_MCP_PORT": "8420",
+        "CURATOR_MCP_AUTH_TOKEN": "${CURATOR_MCP_AUTH_TOKEN}"
+      }
+    }
+  },
+  "agentPushNotifEnabled": true
+}

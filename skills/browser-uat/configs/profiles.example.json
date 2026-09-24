@@ -1,0 +1,20 @@
+{
+  "work": {
+    "port": 9222,
+    "dataDir": "Default",
+    "baseUrl": "https://app-qa.example.com/",
+    "description": "Work QA environment"
+  },
+  "client": {
+    "port": 9223,
+    "dataDir": "Profile 1",
+    "baseUrl": "https://app-staging.example.com/",
+    "description": "Client staging environment"
+  },
+  "personal": {
+    "port": 9224,
+    "dataDir": "Profile 2",
+    "baseUrl": "http://localhost:3000",
+    "description": "Local development"
+  }
+}

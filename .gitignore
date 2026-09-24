@@ -1,0 +1,59 @@
+# --- Secrets and local configuration ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*id_rsa*
+*id_ed25519*
+*credentials*
+*secret*
+.secrets.zsh
+
+# Real (non-example) local configs
+skills/browser-uat/configs/profiles.json
+settings.local.json
+CLAUDE.local.md
+
+# --- Claude Code runtime state (never publish) ---
+/logs/
+/work-log/
+/sessions/
+/session-env/
+/projects/
+/shell-snapshots/
+/file-history/
+/backups/
+/cache/
+/state/
+/ide/
+/history.jsonl
+/.claude/
+
+# --- Dependencies and build output ---
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+
+# --- Test and tooling artifacts ---
+uat-screenshots/
+*.log
+coverage/
+.coverage
+htmlcov/
+
+# --- OS and editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
