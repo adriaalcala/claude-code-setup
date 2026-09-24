@@ -92,14 +92,28 @@ Two portability rules the guards depend on, both enforced by the test suite:
 - Regex matching is case-sensitive, so credential detection runs against a lowercased copy —
   `DB_PASSWORD` is far more common in real code than `db_password`.
 
+### What these hooks are, and are not
+
+They are defence in depth against accidents, not a sandbox against a determined adversary. A regex
+deny list is never complete, and a shell offers unlimited ways to spell the same command: encode it,
+split its flags, indirect through a variable, write it to a file and source that. A review of this
+repository found three such gaps — `rm -r -f /` with separated flags, a command smuggled through
+`base64 -d | bash`, and `git -C /elsewhere push origin main` — all of which are now closed and
+covered by tests, and none of which were the last one.
+
+Treat them as the layer that catches the mistake you were about to make at 2am, and keep the layers
+that do not rely on pattern matching: `permissions.deny` in `settings.json`, a user account without
+passwordless sudo, and backups. `bash-guard` answering `ask` rather than `allow` is deliberate for
+the same reason — it puts a human in the loop instead of trusting the pattern to be exhaustive.
+
 ### PreToolUse — run before a tool executes, can block it
 
 | Hook | What it does | Why I use it |
 |---|---|---|
-| `bash-guard.sh` | Denies destructive commands (`rm -rf /`, `mkfs`, `curl \| sh`, fork bombs, forced pushes to main). Asks for high-impact ones (`sudo`, package installs, `kill -9`, `chmod 777`). Everything else gets no opinion. | The single highest-value guardrail: an agent with shell access needs a hard floor it cannot argue its way past. |
+| `bash-guard.sh` | Denies destructive commands: `rm -r -f /` however the flags are split, `mkfs`, fork bombs, forced pushes to main, and **any** pipe into a shell interpreter (`\| sh`, `\| bash`, `bash <(…)`) rather than only `curl`, since the interpreter is the vector regardless of what feeds it. Asks for high-impact ones (`sudo`, package installs, `kill -9`, `chmod 777`). Everything else gets no opinion. | The single highest-value guardrail: an agent with shell access needs a hard floor it cannot argue its way past. |
 | `write-guard.sh` | Denies writes to protected paths (`/etc`, `~/.ssh`, `.env`, `*.pem`) and content carrying a literal credential — AWS keys, GitHub PATs, private keys, hardcoded passwords. Placeholders and `os.getenv` indirection pass. | Stops credentials from being written into the repo, accidentally or otherwise. |
 | `dependency-check.sh` | Asks before an install that bypasses the registry: a URL or VCS ref, a redirected `--index-url`, a global install, a pre-release tag. No network I/O unless `DEPENDENCY_CHECK_AUDIT=1`. | Typosquats and hijacked install paths are the realistic supply-chain risk, and they are visible in the command itself. |
-| `git-branch-guard.sh` | Denies commits and pushes landing on `main`, `master`, `develop` or `release/*`, reading the refspec when the push names one. `GIT_BRANCH_GUARD=off` disables it per repository. | Protected branches, enforced locally instead of hoped for. |
+| `git-branch-guard.sh` | Denies commits and pushes landing on `main`, `master`, `develop` or `release/*`. Parses the command as tokens rather than by regex, so `git -C /elsewhere push origin main` is resolved against the repository it actually targets, and a push hidden behind `&&` is still seen. `GIT_BRANCH_GUARD=off` disables it per repository. | Protected branches, enforced locally instead of hoped for. |
 
 ### PostToolUse — run after a tool executes
 

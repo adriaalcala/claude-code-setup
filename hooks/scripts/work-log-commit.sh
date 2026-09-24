@@ -16,10 +16,22 @@ hook_init_soft
 [ "$(hook_field '.tool_name')" = "Bash" ] || exit 0
 
 COMMAND="$(hook_field '.tool_input.command')"
-[[ "$COMMAND" =~ git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*commit([[:space:]]|$) ]] || exit 0
-
 CWD="$(hook_field '.cwd')"
-[ -n "$CWD" ] && [ -d "$CWD" ] && cd "$CWD"
+
+# Find the committing segment, honouring `git -C <path> commit`.
+FOUND=""
+while IFS= read -r SEGMENT; do
+  [ -n "$SEGMENT" ] || continue
+  hook_git_parse "$SEGMENT" || continue
+  [ "$HOOK_GIT_SUBCOMMAND" = "commit" ] || continue
+  FOUND="yes"
+  REPO_DIR="${HOOK_GIT_DIR:-$CWD}"
+  [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR" ] || REPO_DIR="$CWD"
+  break
+done <<<"$(hook_command_segments "$COMMAND")"
+
+[ -n "$FOUND" ] || exit 0
+[ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] && cd "$REPO_DIR"
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 

@@ -124,6 +124,79 @@ hook_context() {
 # shellcheck disable=SC2034  # read by the scripts that source this file
 HOOK_MATCHED_PATTERN=""
 
+# hook_command_segments <command> - one shell segment per line.
+# Splits on &&, ||, ; and | so that each git invocation in a compound command
+# is inspected on its own. A separator inside quotes splits too, which only
+# ever produces more segments to check, never fewer.
+hook_command_segments() {
+  printf '%s' "$1" | sed -E 's/(&&|\|\||;|\|)/\n/g'
+}
+
+# hook_git_parse <segment> - find a git invocation and its subcommand.
+#
+# Sets HOOK_GIT_SUBCOMMAND, HOOK_GIT_DIR (the -C argument, if any) and
+# HOOK_GIT_REST (the arguments after the subcommand). Returns 1 when the
+# segment is not a git invocation.
+#
+# This is a token walk rather than a regex on purpose: `git -C /path push`
+# puts a non-option token between git and its subcommand, so any pattern of
+# the form git( -opt)* (commit|push) misses it, while a pattern loose enough
+# to allow arbitrary tokens also matches `git log --grep=push`.
+hook_git_parse() {
+  HOOK_GIT_SUBCOMMAND=""
+  HOOK_GIT_DIR=""
+  HOOK_GIT_REST=""
+
+  local tokens i n t
+  # shellcheck disable=SC2206  # deliberate word splitting of a command line
+  tokens=($1)
+  n=${#tokens[@]}
+  i=0
+
+  while [ "$i" -lt "$n" ]; do
+    t="${tokens[$i]}"
+    # Accept git, /usr/bin/git and the like; skip anything else.
+    if [ "${t##*/}" != "git" ]; then
+      i=$((i + 1))
+      continue
+    fi
+    i=$((i + 1))
+
+    # git's own options sit before the subcommand; several take an argument.
+    while [ "$i" -lt "$n" ]; do
+      t="${tokens[$i]}"
+      case "$t" in
+        -C | -c | --git-dir | --work-tree | --namespace | --exec-path)
+          [ "$t" = "-C" ] && HOOK_GIT_DIR="${tokens[$((i + 1))]:-}"
+          i=$((i + 2))
+          ;;
+        -C*)
+          # shellcheck disable=SC2034  # read by the scripts that source this file
+          HOOK_GIT_DIR="${t#-C}"
+          i=$((i + 1))
+          ;;
+        -*)
+          i=$((i + 1))
+          ;;
+        *)
+          break
+          ;;
+      esac
+    done
+
+    [ "$i" -lt "$n" ] || return 1
+    # shellcheck disable=SC2034  # read by the scripts that source this file
+    HOOK_GIT_SUBCOMMAND="${tokens[$i]}"
+    i=$((i + 1))
+    while [ "$i" -lt "$n" ]; do
+      HOOK_GIT_REST="${HOOK_GIT_REST}${HOOK_GIT_REST:+ }${tokens[$i]}"
+      i=$((i + 1))
+    done
+    return 0
+  done
+  return 1
+}
+
 # hook_matches_any <subject> <pattern>... - POSIX ERE, case-sensitive.
 #
 # Note on portability: bash [[ =~ ]] compiles POSIX ERE through the platform's
@@ -132,6 +205,7 @@ HOOK_MATCHED_PATTERN=""
 # [[:space:]], [[:digit:]] and explicit boundaries instead. The test suite
 # covers this: a pattern that quietly stops matching is a guard that quietly
 # stops guarding.
+
 hook_matches_any() {
   local subject="$1" pattern
   shift

@@ -30,43 +30,59 @@ TOOL_NAME="$(hook_field '.tool_name')"
 COMMAND="$(hook_field '.tool_input.command')"
 [ -n "$COMMAND" ] || hook_pass
 
-# Only commits and pushes are interesting.
-if ! [[ "$COMMAND" =~ git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(commit|push)([[:space:]]|$) ]]; then
-  hook_pass
-fi
+command -v git >/dev/null 2>&1 || hook_pass "git not installed"
 
 CWD="$(hook_field '.cwd')"
-[ -n "$CWD" ] && [ -d "$CWD" ] && cd "$CWD"
-
-command -v git >/dev/null 2>&1 || hook_pass "git not installed"
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 || hook_pass "not a git repository"
-
-# Which branch does this command actually land on?
-TARGET=""
-if [[ "$COMMAND" =~ git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*push([[:space:]]|$) ]]; then
-  # `git push <remote> <refspec>` - take the refspec's destination if present.
-  REFSPEC="$(printf '%s' "$COMMAND" \
-    | sed -n 's/.*git[[:space:]][[:space:]]*\(-[^[:space:]]*[[:space:]][[:space:]]*\)*push[[:space:]][[:space:]]*//p' \
-    | tr ' ' '\n' | grep -v '^-' | sed -n '2p')" || REFSPEC=""
-  if [ -n "$REFSPEC" ]; then
-    TARGET="${REFSPEC##*:}"      # src:dst -> dst
-    TARGET="${TARGET#refs/heads/}"
-  fi
-fi
-
-if [ -z "$TARGET" ]; then
-  TARGET="$(git branch --show-current 2>/dev/null)" || TARGET=""
-fi
-
-if [ -z "$TARGET" ]; then
-  # Detached HEAD, or a refspec we could not read. Ambiguity blocks.
-  hook_deny "git-branch-guard: could not determine the branch this command targets. Blocking (fail-closed). Set GIT_BRANCH_GUARD=off to bypass."
-fi
-
 read -r -a PROTECTED <<<"${GIT_PROTECTED_BRANCHES:-^main$ ^master$ ^develop$ ^release/}"
 
-if hook_matches_any "$TARGET" "${PROTECTED[@]}"; then
-  hook_deny "git-branch-guard: '$TARGET' is a protected branch. Create a feature branch first (git switch -c feature/your-change), or set GIT_BRANCH_GUARD=off for this repository."
-fi
+# Each segment of a compound command is inspected on its own, so that a push
+# hidden behind && is seen and `git log --grep=push` is not mistaken for one.
+while IFS= read -r SEGMENT; do
+  [ -n "$SEGMENT" ] || continue
+  hook_git_parse "$SEGMENT" || continue
 
-hook_pass "target branch '$TARGET' is not protected"
+  case "$HOOK_GIT_SUBCOMMAND" in
+    commit | push) ;;
+    *) continue ;;
+  esac
+
+  # `git -C <path>` runs against a different repository than .cwd.
+  REPO_DIR="${HOOK_GIT_DIR:-$CWD}"
+  [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR" ] || REPO_DIR="$CWD"
+  [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR" ] && cd "$REPO_DIR"
+
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || continue
+
+  # Which branch does this land on?
+  TARGET=""
+  if [ "$HOOK_GIT_SUBCOMMAND" = "push" ]; then
+    # `git push <remote> <refspec>` - the second positional argument.
+    POSITIONAL=0
+    for ARG in $HOOK_GIT_REST; do
+      case "$ARG" in
+        -*) continue ;;
+      esac
+      POSITIONAL=$((POSITIONAL + 1))
+      if [ "$POSITIONAL" -eq 2 ]; then
+        TARGET="${ARG##*:}" # src:dst -> dst
+        TARGET="${TARGET#refs/heads/}"
+        break
+      fi
+    done
+  fi
+
+  if [ -z "$TARGET" ]; then
+    TARGET="$(git branch --show-current 2>/dev/null)" || TARGET=""
+  fi
+
+  if [ -z "$TARGET" ]; then
+    # Detached HEAD, or a refspec we could not read. Ambiguity blocks.
+    hook_deny "git-branch-guard: could not determine the branch '$HOOK_GIT_SUBCOMMAND' targets. Blocking (fail-closed). Set GIT_BRANCH_GUARD=off to bypass."
+  fi
+
+  if hook_matches_any "$TARGET" "${PROTECTED[@]}"; then
+    hook_deny "git-branch-guard: '$TARGET' is a protected branch. Create a feature branch first (git switch -c feature/your-change), or set GIT_BRANCH_GUARD=off for this repository."
+  fi
+done <<<"$(hook_command_segments "$COMMAND")"
+
+hook_pass "no segment targets a protected branch"

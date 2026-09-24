@@ -133,6 +133,9 @@ echo
 echo "bash-guard (PreToolUse / Bash)"
 check "destructive rm -rf / is denied"      bash-guard.sh bash-dangerous-rm.json  0 deny
 check "curl piped into sh is denied"        bash-guard.sh bash-curl-pipe-sh.json  0 deny
+check "rm with separated -r -f is denied"   bash-guard.sh bash-rm-split-flags.json 0 deny
+check "base64 decoded into bash is denied"  bash-guard.sh bash-base64-pipe-shell.json 0 deny
+check "piping into grep sh is not a shell"  bash-guard.sh bash-pipe-grep-sh.json  0 none
 check "sudo apt-get install asks"           bash-guard.sh bash-sudo-install.json  0 ask 
 check "ordinary ls passes through"          bash-guard.sh bash-safe-ls.json       0 none
 check "unlisted command passes by default"  bash-guard.sh bash-unlisted-command.json 0 none
@@ -155,7 +158,10 @@ echo
 echo "git-branch-guard (PreToolUse / Bash)"
 check "push to main is denied"              git-branch-guard.sh git-push-main.json    0 deny
 check "push to feature branch passes"       git-branch-guard.sh git-push-feature.json 0 none
+check "git -C elsewhere push main denied"   git-branch-guard.sh git-push-main-dash-c.json 0 deny
+check "push chained after && is denied"     git-branch-guard.sh git-chained-push-main.json 0 deny
 check "git status is not a push"            git-branch-guard.sh git-status.json       0 none
+check "git log --grep=push is not a push"   git-branch-guard.sh git-log-mentions-push.json 0 none
 check "GIT_BRANCH_GUARD=off bypasses"       git-branch-guard.sh git-push-main.json    0 none GIT_BRANCH_GUARD=off
 check "malformed event blocks fail-closed"  git-branch-guard.sh malformed.json        2 none
 echo

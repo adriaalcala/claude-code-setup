@@ -40,8 +40,8 @@ fi
 # shellcheck disable=SC2016  # these are regexes; $HOME is matched literally
 DESTRUCTIVE_PATTERNS=(
   'rm[[:space:]]+(-[[:alnum:]]*[[:space:]]+)*-?[[:alnum:]]*[rR][[:alnum:]]*[[:space:]]+/[[:space:]]*$'
-  'rm[[:space:]]+-[[:alnum:]]*[rR][[:alnum:]]*[[:space:]]+(/|\*|~|\$HOME)'
-  'rm[[:space:]]+-[[:alnum:]]*[rR][[:alnum:]]*[[:space:]]+--no-preserve-root'
+  'rm([[:space:]]+-[[:alnum:]-]+)*[[:space:]]+-[[:alnum:]-]*[rR][[:alnum:]-]*([[:space:]]+-[[:alnum:]-]+)*[[:space:]]+(/|\*|~|\$HOME)([[:space:]]|$)'
+  'rm([[:space:]]+-[[:alnum:]-]+)*[[:space:]]+--no-preserve-root'
   'dd[[:space:]]+.*of=/dev/(sd|nvme|disk|hd)'
   'dd[[:space:]]+if=/dev/(zero|random|urandom)[[:space:]]+of=/'
   '(^|[^[:alnum:]_-])mkfs(\.[[:alnum:]]+)?([^[:alnum:]_-]|$)'
@@ -51,7 +51,8 @@ DESTRUCTIVE_PATTERNS=(
   'chmod[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*777[[:space:]]+/[[:space:]]*$'
   'chown[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*[^[:space:]]+[[:space:]]+/[[:space:]]*$'
   '>[[:space:]]*/etc/(passwd|shadow|sudoers)'
-  '(curl|wget)[[:space:]][^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba)?sh'
+  '\|[[:space:]]*(sudo[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?(ba|z|k|da)?sh([[:space:]]|$)'
+  '(^|[^[:alnum:]_-])(ba|z|k|da)?sh[[:space:]]+<\('
   ':\(\)[[:space:]]*\{.*\|.*&.*\};:'
   'git[[:space:]]+push[[:space:]]+.*--force(-with-lease)?[[:space:]]+[^[:space:]]+[[:space:]]+(main|master)([^[:alnum:]_/-]|$)'
   '(^|[;&|][[:space:]]*)[[:space:]]*history[[:space:]]+-c([[:space:]]|$)'

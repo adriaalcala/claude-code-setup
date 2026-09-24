@@ -1,0 +1,11 @@
+{
+  "session_id": "test-session",
+  "cwd": "__CWD__",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "ls scripts/ | grep sh | sort",
+    "description": "List shell scripts"
+  },
+  "tool_use_id": "toolu_test20"
+}
