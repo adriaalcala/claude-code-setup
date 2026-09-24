@@ -1,93 +1,69 @@
 #!/usr/bin/env bash
-# Work Log - Auto-register git commits
-# Triggers on PostToolUse for Bash commands
-# Only logs if the command was a successful git commit
+# work-log-commit.sh - PostToolUse hook that records successful git commits.
+#
+# Event:  PostToolUse, matcher "Bash"
+# Input:  JSON on stdin; .tool_input.command and .cwd
+# Output: nothing. The entry lands in ~/.claude/work-log/<date>.json.
 
 set -euo pipefail
 
-LOG_DIR="$HOME/.claude/work-log"
-TODAY=$(date +%Y-%m-%d)
-LOG_FILE="$LOG_DIR/$TODAY.json"
+HOOK_NAME="work-log-commit"
+# shellcheck source=hooks/scripts/lib/hook-common.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/hook-common.sh"
 
-# Read tool input from stdin (JSON with tool_input)
-INPUT=$(cat)
+hook_init_soft
 
-# Extract the command that was executed
-COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
+[ "$(hook_field '.tool_name')" = "Bash" ] || exit 0
 
-# Only proceed if this was a git commit command
-if [[ ! "$COMMAND" =~ ^git\ commit ]]; then
-    exit 0
-fi
+COMMAND="$(hook_field '.tool_input.command')"
+[[ "$COMMAND" =~ git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*commit([[:space:]]|$) ]] || exit 0
 
-# Check if we're in a git repo and the commit succeeded
-if ! git rev-parse --is-inside-work-tree &>/dev/null; then
-    exit 0
-fi
+CWD="$(hook_field '.cwd')"
+[ -n "$CWD" ] && [ -d "$CWD" ] && cd "$CWD"
 
-# Get the last commit info
-COMMIT_HASH=$(git log -1 --pretty=format:'%h' 2>/dev/null) || exit 0
-COMMIT_MSG=$(git log -1 --pretty=format:'%s' 2>/dev/null) || exit 0
-COMMIT_DATE=$(git log -1 --pretty=format:'%aI' 2>/dev/null) || exit 0
-PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-PROJECT_NAME=$(basename "$PROJECT_ROOT")
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 
-# Get files changed in this commit
-FILES_CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null | jq -R -s 'split("\n") | map(select(length > 0))') || FILES_CHANGED="[]"
+COMMIT_HASH="$(git log -1 --pretty=format:'%h' 2>/dev/null)" || exit 0
+COMMIT_MSG="$(git log -1 --pretty=format:'%s' 2>/dev/null)" || exit 0
+PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+PROJECT_NAME="$(basename "$PROJECT_ROOT")"
+BRANCH="$(git branch --show-current 2>/dev/null)" || BRANCH=""
 
-# Detect tags from commit message
-TAGS="[]"
-if [[ "$COMMIT_MSG" =~ ^feat ]]; then
-    TAGS='["feature"]'
-elif [[ "$COMMIT_MSG" =~ ^fix ]]; then
-    TAGS='["bugfix"]'
-elif [[ "$COMMIT_MSG" =~ ^docs ]]; then
-    TAGS='["documentation"]'
-elif [[ "$COMMIT_MSG" =~ ^test ]]; then
-    TAGS='["testing"]'
-elif [[ "$COMMIT_MSG" =~ ^refactor ]]; then
-    TAGS='["refactor"]'
-elif [[ "$COMMIT_MSG" =~ ^chore ]]; then
-    TAGS='["chore"]'
-fi
+FILES_CHANGED="$(git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null \
+  | jq -R -s 'split("\n") | map(select(length > 0))')" || FILES_CHANGED="[]"
 
-# Create log directory if needed
-mkdir -p "$LOG_DIR"
+case "$COMMIT_MSG" in
+  feat*) TAGS='["feature"]' ;;
+  fix*) TAGS='["bugfix"]' ;;
+  docs*) TAGS='["documentation"]' ;;
+  refactor*) TAGS='["refactor"]' ;;
+  test*) TAGS='["testing"]' ;;
+  chore*) TAGS='["chore"]' ;;
+  *) TAGS='[]' ;;
+esac
 
-# Create or load existing log file
-if [[ -f "$LOG_FILE" ]]; then
-    EXISTING=$(cat "$LOG_FILE")
-else
-    EXISTING='{"entries":[]}'
-fi
+LOG_DIR="${WORK_LOG_DIR:-$HOME/.claude/work-log}"
+mkdir -p "$LOG_DIR" 2>/dev/null || exit 0
+LOG_FILE="$LOG_DIR/$(date +%Y-%m-%d).json"
 
-# Create the new entry
-TIMESTAMP=$(date -Iseconds)
-NEW_ENTRY=$(jq -n \
-    --arg ts "$TIMESTAMP" \
-    --arg proj "$PROJECT_ROOT" \
-    --arg projName "$PROJECT_NAME" \
-    --arg desc "$COMMIT_MSG" \
-    --arg hash "$COMMIT_HASH" \
-    --arg msg "$COMMIT_MSG" \
-    --argjson files "$FILES_CHANGED" \
-    --argjson tags "$TAGS" \
-    '{
-        timestamp: $ts,
-        type: "commit",
-        project: $proj,
-        project_name: $projName,
-        description: $desc,
-        files: $files,
-        commit: {
-            hash: $hash,
-            message: $msg
-        },
-        tags: $tags
-    }')
+[ -f "$LOG_FILE" ] || printf '{"entries":[]}\n' >"$LOG_FILE"
+EXISTING="$(jq -e . "$LOG_FILE" 2>/dev/null)" || EXISTING='{"entries":[]}'
 
-# Append to log file
-echo "$EXISTING" | jq --argjson entry "$NEW_ENTRY" '.entries += [$entry]' > "$LOG_FILE"
+ENTRY="$(jq -n \
+  --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg proj "$PROJECT_ROOT" \
+  --arg projName "$PROJECT_NAME" \
+  --arg branch "$BRANCH" \
+  --arg hash "$COMMIT_HASH" \
+  --arg msg "$COMMIT_MSG" \
+  --argjson files "$FILES_CHANGED" \
+  --argjson tags "$TAGS" \
+  '{timestamp:$ts, type:"commit", project:$proj, project_name:$projName,
+    branch:$branch, description:$msg, files:$files,
+    commit:{hash:$hash, message:$msg}, tags:$tags}')"
 
-# Silent success - no output to avoid interfering with Claude
+printf '%s' "$EXISTING" | jq --argjson entry "$ENTRY" '.entries += [$entry]' >"$LOG_FILE.tmp" \
+  && mv "$LOG_FILE.tmp" "$LOG_FILE"
+
+hook_log "LOGGED" "$COMMIT_HASH $COMMIT_MSG"
 exit 0

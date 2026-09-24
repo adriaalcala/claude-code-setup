@@ -77,8 +77,8 @@ if [ ! -d "$FULL_DATA_DIR" ]; then
     echo -e "${YELLOW}Warning:${NC} Chrome profile directory not found: $FULL_DATA_DIR"
     echo ""
     echo "Available Chrome profiles:"
-    ls -1 "$CHROME_DATA_BASE" | grep -E "^(Default|Profile)" | while read -r d; do
-        echo "  $d"
+    for d in "$CHROME_DATA_BASE"/Default "$CHROME_DATA_BASE"/Profile*; do
+        [ -d "$d" ] && echo "  $(basename "$d")"
     done
     echo ""
     echo "Update dataDir in $CONFIG_FILE to match one of these."

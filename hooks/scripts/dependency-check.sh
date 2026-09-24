@@ -1,96 +1,78 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# dependency-check.sh - PreToolUse hook that surfaces risky dependency installs.
+#
+# Event:  PreToolUse, matcher "Bash"
+# Input:  JSON on stdin; .tool_input.command and .cwd
+# Output: a PreToolUse permissionDecision, or nothing at all
+#
+# This hook runs inside the tool-call latency budget, so it does no network I/O
+# by default: it pattern-matches the install command for the supply-chain
+# vectors that actually matter and asks the user to confirm those.
+#
+# Set DEPENDENCY_CHECK_AUDIT=1 to additionally run `npm audit` / `pip-audit`
+# before an install. That is a network call taking seconds, so raise the hook's
+# timeout in settings.json to at least 30 if you turn it on.
+
 set -euo pipefail
 
-# Pre-tool-use hook: Check for security vulnerabilities in new dependencies
-# Purpose: Audit pip/npm packages before installation
-# Output: JSON with {allowed: bool, warnings: [...]}
+HOOK_NAME="dependency-check"
+# shellcheck source=hooks/scripts/lib/hook-common.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/hook-common.sh"
 
-LOG_DIR="${LOG_DIR:-.}"
-LOG_FILE="${LOG_DIR}/dependency-check.log"
+hook_init
 
-# Parse command to detect dependency install
-COMMAND="${1:-}"
-ALLOWED=true
-WARNINGS=()
+TOOL_NAME="$(hook_field '.tool_name')"
+[ "$TOOL_NAME" = "Bash" ] || hook_pass
 
-# Detect pip install
-if [[ "$COMMAND" =~ ^pip[[:space:]]+install ]]; then
-    PACKAGE=$(echo "$COMMAND" | sed 's/pip install //' | awk '{print $1}')
-    
-    # Check if pip-audit is available
-    if command -v pip-audit &> /dev/null; then
-        # Run audit on specific package (if already installed)
-        if pip show "$PACKAGE" > /dev/null 2>&1; then
-            AUDIT_OUTPUT=$(pip-audit --desc 2>&1 || true)
-            if echo "$AUDIT_OUTPUT" | grep -q "FOUND"; then
-                WARNINGS+=("pip-audit: vulnerabilities found in dependencies")
-            fi
-        fi
-    else
-        WARNINGS+=("pip-audit not installed - skipping vulnerability check")
+COMMAND="$(hook_field '.tool_input.command')"
+[ -n "$COMMAND" ] || hook_pass
+
+INSTALL_RE='(^|[;&|][[:space:]]*)[[:space:]]*(npm[[:space:]]+(install|i|add)|yarn[[:space:]]+add|pnpm[[:space:]]+(add|install)|pip3?[[:space:]]+install|uv[[:space:]]+(add|pip[[:space:]]+install)|cargo[[:space:]]+(add|install)|gem[[:space:]]+install|go[[:space:]]+install)([[:space:]]|$)'
+if ! [[ "$COMMAND" =~ $INSTALL_RE ]]; then
+  hook_pass
+fi
+
+# --- supply-chain vectors worth a confirmation -------------------------------
+RISKY_PATTERNS=(
+  # Installing straight from a URL or VCS ref bypasses the registry entirely.
+  '(install|add)[[:space:]]+[^[:space:]]*(https?://|git\+|git@|ssh://)'
+  '(install|add)[[:space:]]+[^[:space:]]*\.(tar\.gz|tgz|zip|whl)([[:space:]]|$)'
+  # Redirecting the registry is how a typosquat gets served as the real thing.
+  '--(index-url|extra-index-url|registry|repo)[[:space:]=]'
+  '--trusted-host[[:space:]=]'
+  # Global installs escape the project sandbox.
+  'npm[[:space:]]+(install|i)[[:space:]]+.*(-g|--global)'
+  'pip3?[[:space:]]+install[[:space:]]+.*--user'
+  # Pre-release and unpinned-from-anywhere installs.
+  '--pre([[:space:]]|$)'
+  'npm[[:space:]]+install[[:space:]]+.*@(next|canary|beta|latest)([[:space:]]|$)'
+  # Local paths can point outside the repository.
+  '(install|add)[[:space:]]+(file:|link:|portal:)'
+)
+
+if hook_matches_any "$COMMAND" "${RISKY_PATTERNS[@]}"; then
+  hook_ask "dependency-check: this install bypasses the normal registry path (matched /${HOOK_MATCHED_PATTERN}/). Confirm the source is the one you expect."
+fi
+
+# --- optional audit ----------------------------------------------------------
+if [ "${DEPENDENCY_CHECK_AUDIT:-0}" = "1" ]; then
+  CWD="$(hook_field '.cwd')"
+  [ -n "$CWD" ] && [ -d "$CWD" ] && cd "$CWD"
+
+  FINDINGS=""
+  if [[ "$COMMAND" =~ (npm|yarn|pnpm) ]] && [ -f package.json ] && command -v npm >/dev/null 2>&1; then
+    COUNT="$(npm audit --json 2>/dev/null \
+      | jq -r '[.metadata.vulnerabilities.high // 0, .metadata.vulnerabilities.critical // 0] | add' 2>/dev/null)" || COUNT=""
+    [ -n "$COUNT" ] && [ "$COUNT" != "0" ] && FINDINGS="npm audit reports $COUNT high or critical advisories in the current tree"
+  elif [[ "$COMMAND" =~ (pip|uv) ]] && command -v pip-audit >/dev/null 2>&1; then
+    if ! pip-audit --strict --progress-spinner off >/dev/null 2>&1; then
+      FINDINGS="pip-audit reports known advisories in the current environment"
     fi
-    
-    # Log
-    {
-        echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') - pip install $PACKAGE - ALLOWED"
-    } >> "$LOG_FILE" 2>/dev/null || true
+  fi
+
+  if [ -n "$FINDINGS" ]; then
+    hook_ask "dependency-check: $FINDINGS. Installing more packages on top is probably not what you want yet."
+  fi
 fi
 
-# Detect npm install
-if [[ "$COMMAND" =~ ^npm[[:space:]]+install|^npm[[:space:]]+add ]] || \
-   [[ "$COMMAND" =~ ^yarn[[:space:]]+add ]]; then
-    
-    TOOL="npm"
-    [[ "$COMMAND" =~ ^yarn ]] && TOOL="yarn"
-    PACKAGE=$(echo "$COMMAND" | sed 's/.* //' | awk '{print $1}')
-    
-    # Check if npm audit is available
-    if command -v npm &> /dev/null; then
-        # Run npm audit if package.json exists
-        if [[ -f "package.json" ]]; then
-            AUDIT_OUTPUT=$(npm audit 2>&1 || true)
-            if echo "$AUDIT_OUTPUT" | grep -qi "vulnerabilities"; then
-                WARNINGS+=("npm audit: vulnerabilities found in dependencies")
-            fi
-        fi
-    else
-        WARNINGS+=("npm audit not available - skipping vulnerability check")
-    fi
-    
-    # Log
-    {
-        echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') - $TOOL install $PACKAGE - ALLOWED (with warnings)"
-    } >> "$LOG_FILE" 2>/dev/null || true
-fi
-
-# Detect cargo add (Rust)
-if [[ "$COMMAND" =~ ^cargo[[:space:]]+add ]]; then
-    PACKAGE=$(echo "$COMMAND" | sed 's/cargo add //' | awk '{print $1}')
-    
-    # Note: cargo-audit would be checked here if configured
-    WARNINGS+=("Rust dependency: $PACKAGE - ensure version compatibility")
-    
-    {
-        echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') - cargo add $PACKAGE - ALLOWED"
-    } >> "$LOG_FILE" 2>/dev/null || true
-fi
-
-# Always allow installation (fail-open), but warn
-ALLOWED=true
-
-# Output JSON
-cat <<EOF
-{
-  "allowed": true,
-  "reason": "Dependency installation allowed - check warnings",
-  "warnings": [$(
-    for warning in "${WARNINGS[@]}"; do
-        printf '"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'%s'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"'"', "$warning"
-    done | paste -sd',' -
-  )],
-  "action": "continue with install and review warnings",
-  "log_file": "$LOG_FILE"
-}
-EOF
-
-exit 0
+hook_pass "install command carries no known risk marker"

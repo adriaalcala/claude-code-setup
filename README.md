@@ -24,6 +24,7 @@ and they deny by default when something looks dangerous or ambiguous.
 ├── commands/   4 slash commands
 ├── hooks/
 │   └── scripts/  12 lifecycle hook scripts (bash)
+│       └── lib/  shared stdin/exit-code helpers
 ├── skills/     20 skills (SKILL.md + assets for browser-uat)
 ├── rules/      Language-specific coding standards (Python, TypeScript)
 └── examples/   settings.json and CLAUDE.md templates
@@ -63,35 +64,56 @@ agent cannot write, and only agents that actually shell out get `Bash`.
 
 ## Hooks
 
-Hooks are plain bash, registered in `settings.json` against Claude Code lifecycle events. They are
-deliberately boring and fail-closed: on error they deny rather than allow.
+Hooks are plain bash, registered in `settings.json` against Claude Code lifecycle events.
+
+They speak the documented [hook contract](https://code.claude.com/docs/en/hooks): Claude Code sends
+the event as JSON on **stdin** (`tool_name`, `tool_input.command`, `tool_input.file_path`, `cwd`,
+…), and the hook answers through its **exit code** and **stdout**:
+
+| Exit | Meaning |
+|---|---|
+| `0` + a `hookSpecificOutput` JSON object | The decision. `permissionDecision` is `deny`, `ask` or `allow`. |
+| `0` + no output | No opinion — the normal permission flow in `settings.json` applies. |
+| `2` | Blocking error. stderr is shown to Claude. Honoured by `PreToolUse` and `Stop`; ignored by `PostToolUse` and `SessionStart`. |
+
+Shared plumbing lives in `hooks/scripts/lib/hook-common.sh`. It is **fail-closed on the events that
+can block**: if `jq` is missing or the event does not parse, a `PreToolUse` hook exits 2 rather than
+letting the call through. Hooks on events that cannot block degrade to a silent no-op instead, since
+exiting non-zero there produces noise and blocks nothing.
+
+Two portability rules the guards depend on:
+
+- `bash`'s `[[ =~ ]]` is POSIX ERE. `\s`, `\d` and `\b` are GNU extensions that **silently fail to
+  match** on macOS. Every pattern uses `[[:space:]]`, `[[:digit:]]` and explicit boundaries.
+- Regex matching is case-sensitive, so credential detection runs against a lowercased copy —
+  `DB_PASSWORD` is far more common in real code than `db_password`.
 
 ### PreToolUse — run before a tool executes, can block it
 
 | Hook | What it does | Why I use it |
 |---|---|---|
-| `bash-guard.sh` | Matches the command against a deny list (`rm -rf /`, `mkfs`, `curl \| bash`, piped sudo, writes to `/etc/passwd`…) and an allow list. Denies on any error. | The single highest-value guardrail: an agent with shell access needs a hard floor it cannot argue its way past. |
-| `write-guard.sh` | Blocks writes to system paths and to files that look like secrets (`*.pem`, `*id_rsa*`, `.env.production`, `*credentials*`), and scans content for secret-shaped assignments. | Stops credentials from being written into the repo, accidentally or otherwise. |
-| `dependency-check.sh` | Audits pip/npm packages for known vulnerabilities before an install command runs. | Supply-chain problems are much cheaper to catch before `install` than after. |
-| `git-branch-guard.sh` | Detects commits and pushes targeting `main`, `master`, `develop` or `release/*` and blocks them. | Protected branches, enforced locally instead of hoped for. |
+| `bash-guard.sh` | Denies destructive commands (`rm -rf /`, `mkfs`, `curl \| sh`, fork bombs, forced pushes to main). Asks for high-impact ones (`sudo`, package installs, `kill -9`, `chmod 777`). Everything else gets no opinion. | The single highest-value guardrail: an agent with shell access needs a hard floor it cannot argue its way past. |
+| `write-guard.sh` | Denies writes to protected paths (`/etc`, `~/.ssh`, `.env`, `*.pem`) and content carrying a literal credential — AWS keys, GitHub PATs, private keys, hardcoded passwords. Placeholders and `os.getenv` indirection pass. | Stops credentials from being written into the repo, accidentally or otherwise. |
+| `dependency-check.sh` | Asks before an install that bypasses the registry: a URL or VCS ref, a redirected `--index-url`, a global install, a pre-release tag. No network I/O unless `DEPENDENCY_CHECK_AUDIT=1`. | Typosquats and hijacked install paths are the realistic supply-chain risk, and they are visible in the command itself. |
+| `git-branch-guard.sh` | Denies commits and pushes landing on `main`, `master`, `develop` or `release/*`, reading the refspec when the push names one. `GIT_BRANCH_GUARD=off` disables it per repository. | Protected branches, enforced locally instead of hoped for. |
 
 ### PostToolUse — run after a tool executes
 
 | Hook | What it does | Why I use it |
 |---|---|---|
 | `write-format.sh` | Auto-formats the file that was just written (ruff / prettier / black by file type). | Formatting stops being a review topic. Every file is canonical the moment it lands. |
-| `bash-vuln.sh` | Scans for known security issues in dependencies after an install completes. | The second half of the dependency check, once the real tree is resolved. |
+| `bash-vuln.sh` | Runs `npm audit` / `pip-audit` after an install and feeds the result back as `additionalContext`. Bounded by `BASH_VULN_TIMEOUT`. | The second half of the dependency check, once the real tree is resolved. `PostToolUse` cannot block, so it reports rather than denies. |
 | `work-log-commit.sh` | Detects a successful `git commit` and appends it to a dated JSON work log. | A commit-accurate activity log I did not have to maintain by hand. |
-| `cost-tracker.sh` | Logs tool usage and estimated token cost to CSV. | Makes the cost of a given working style visible instead of arriving as a monthly surprise. |
+| `cost-tracker.sh` | Appends tool name and input/output size to a CSV. `cost-tracker.sh summary` reads it back. | Makes the cost of a given working style visible instead of arriving as a monthly surprise. |
 | `posttooluse-failure.sh` | Logs tool failures with rotation, redacting secrets and home paths from the captured error. | Failure context for debugging, without the log itself becoming a leak. |
 
 ### Session lifecycle
 
 | Hook | What it does | Why I use it |
 |---|---|---|
-| `session-start.sh` | Detects the project (git / node / python / go), checks Ollama, Context Curator and ChromaDB, and seeds the session context. | Claude starts every session already knowing where it is and which services are reachable. |
-| `env-validator.sh` | Validates the local environment at startup: Ollama running, required models pulled, dependencies present. | Fails loudly at second zero instead of halfway through a task. |
-| `stop.sh` | On session end, produces a git summary and a final context snapshot, and records service state. | A written handover to my next session. |
+| `session-start.sh` | Detects the project (git / node / python / go), probes Ollama, Context Curator and ChromaDB, and returns it as `additionalContext`. | Claude starts every session already knowing where it is and which services are reachable. |
+| `env-validator.sh` | Validates the local environment at startup: required binaries, Ollama reachable, required models pulled. Silent when everything is present. | Fails loudly at second zero instead of halfway through a task. |
+| `stop.sh` | On session end, appends a git and service summary to the log directory. | A written handover to my next session. Note that on `Stop`, exit 2 would keep the conversation alive, so it always exits 0. |
 
 ---
 
@@ -166,8 +188,10 @@ restated so a standard lives in exactly one place.
 
 ## Installation
 
-Requires [Claude Code](https://claude.com/claude-code). The Ollama-backed parts additionally
-require [Ollama](https://ollama.com) with `qwen3-coder` and `nomic-embed-text`.
+Requires [Claude Code](https://claude.com/claude-code) and `jq` — the hooks parse their event with
+it, and a `PreToolUse` hook that cannot find `jq` blocks rather than waving the call through. The
+Ollama-backed parts additionally require [Ollama](https://ollama.com) with `qwen3-coder` and
+`nomic-embed-text`.
 
 ```bash
 git clone https://github.com/adriaalcala/claude-code-setup.git
@@ -180,6 +204,13 @@ Back up whatever you already have, then copy in the pieces you want:
 cp -r agents commands hooks skills rules ~/.claude/
 chmod +x ~/.claude/hooks/scripts/*.sh
 ```
+
+`hooks/scripts/lib/hook-common.sh` has to come along — each hook sources it relative to its own
+path.
+
+`git-branch-guard.sh` denies commits on `main`, which is wrong for a repository that works on trunk.
+Turn it off per repository with `export GIT_BRANCH_GUARD=off`, or narrow it with
+`GIT_PROTECTED_BRANCHES='^release/'`.
 
 Merge the example settings into your own `~/.claude/settings.json` (do not overwrite it blindly —
 it holds your permissions):

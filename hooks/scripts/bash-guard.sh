@@ -1,267 +1,112 @@
-#!/bin/bash
-# bash-guard.sh - PreToolUse hook to block dangerous commands
-# Fail-closed: defaults to DENY on any error
+#!/usr/bin/env bash
+# bash-guard.sh - PreToolUse hook that blocks destructive shell commands.
+#
+# Event:  PreToolUse, matcher "Bash"
+# Input:  JSON on stdin, .tool_input.command holds the command
+# Output: a PreToolUse permissionDecision, or nothing at all
+#
+# Policy, in order:
+#   1. Destructive patterns       -> deny
+#   2. High-impact patterns       -> ask (user confirms in the dialog)
+#   3. BASH_GUARD_STRICT=1        -> deny anything not on the allow list
+#   4. Otherwise                  -> no decision, normal permission flow applies
+#
+# Strict mode reproduces a deny-by-default allow list. It is off by default
+# because it denies ordinary commands such as mkdir, cp and mv.
 
 set -euo pipefail
 
-# Log directory
-LOG_DIR="${LOG_DIR:-./.claude/logs}"
-mkdir -p "$LOG_DIR"
+HOOK_NAME="bash-guard"
+# shellcheck source=hooks/scripts/lib/hook-common.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/hook-common.sh"
 
-TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-LOG_FILE="$LOG_DIR/bash-guard.log"
+hook_init
 
-# Input from Claude Code
-COMMAND="${1:-}"
-CONTEXT="${2:-}"
+TOOL_NAME="$(hook_field '.tool_name')"
+COMMAND="$(hook_field '.tool_input.command')"
 
-# Output result as JSON
-output_result() {
-  local allowed="$1"
-  local reason="$2"
+# Only Bash-like tools carry a command. Anything else is none of our business.
+case "$TOOL_NAME" in
+  Bash | PowerShell) ;;
+  *) hook_pass ;;
+esac
 
-  cat <<EOF
-{
-  "allowed": $allowed,
-  "reason": "$reason",
-  "timestamp": "$TIMESTAMP",
-  "command_preview": "${COMMAND:0:100}"
-}
-EOF
-}
-
-# Dangerous commands - ALWAYS DENY
-DANGEROUS_PATTERNS=(
-  '^rm\s+-rf\s+/'
-  '^rm\s+-rf\s+\*'
-  '^dd\s+if=/dev/zero'
-  '^mkfs'
-  '^fsck'
-  '^fdisk'
-  '^parted\s'
-  '^kpartx'
-  '^dmsetup'
-  '^lvm\s'
-  '^cryptsetup\s'
-  '^halt'
-  '^poweroff'
-  '^reboot'
-  '^shutdown'
-  '^init\s+0'
-  '^telinit\s+0'
-  '^systemctl\s+poweroff'
-  '^systemctl\s+reboot'
-  '^systemctl\s+halt'
-  '^chmod\s+777\s+/'
-  '^chown\s+\*:\*'
-  'rm.*\$HOME'
-  'rm.*~'
-  '>\s*/etc/passwd'
-  '>\s*/etc/shadow'
-  '>\s*/.bashrc'
-  '>\s*/.bash_profile'
-  'wget.*malware'
-  'curl.*\|\s*bash'
-  '&&\s*sudo\s+rm'
-  '&&\s*rm\s+-rf'
-  ';\s*sudo\s+rm'
-  ';\s*rm\s+-rf'
-)
-
-# Check for dangerous patterns
-for pattern in "${DANGEROUS_PATTERNS[@]}"; do
-  if [[ "$COMMAND" =~ $pattern ]]; then
-    echo "$TIMESTAMP DENY: $COMMAND (matched pattern: $pattern)" >> "$LOG_FILE"
-    output_result "false" "Dangerous command blocked: pattern detected"
-    exit 0
-  fi
-done
-
-# ALLOW list - commands that are always safe
-ALLOW_PATTERNS=(
-  '^echo\s'
-  '^printf\s'
-  '^pwd'
-  '^ls'
-  '^cd\s'
-  '^cat\s'
-  '^head\s'
-  '^tail\s'
-  '^grep'
-  '^sed\s'
-  '^awk\s'
-  '^sort'
-  '^uniq'
-  '^wc\s'
-  '^find\s'
-  '^tree'
-  '^du\s'
-  '^df'
-  '^date'
-  '^whoami'
-  '^hostname'
-  '^env'
-  '^which\s'
-  '^man\s'
-  '^curl\s'
-  '^wget\s'
-  '^git\s'
-  '^npm\s'
-  '^python\s'
-  '^pip\s'
-  '^node\s'
-  '^npx\s'
-  '^yarn\s'
-  '^docker\s'
-  '^docker-compose\s'
-  '^composer\s'
-  '^bundle\s'
-  '^go\s'
-  '^cargo\s'
-  '^rustc\s'
-  '^gcc\s'
-  '^make'
-  '^cmake'
-  '^gcc\s'
-  '^clang'
-  '^java\s'
-  '^javac'
-  '^mvn\s'
-  '^gradle\s'
-  '^sqlplus'
-  '^psql'
-  '^mysql'
-  '^mongosh'
-  '^redis-cli'
-  '^sqlite3'
-  '^ollama'
-  '^curl.*ollama'
-)
-
-# Check if command is in allow list
-for pattern in "${ALLOW_PATTERNS[@]}"; do
-  if [[ "$COMMAND" =~ $pattern ]]; then
-    echo "$TIMESTAMP ALLOW: $COMMAND (matched allow pattern: $pattern)" >> "$LOG_FILE"
-    output_result "true" "Safe command allowed"
-    exit 0
-  fi
-done
-
-# HIGH-RISK operations - DENY unless explicitly whitelisted
-RISKY_PATTERNS=(
-  'sudo\s'
-  'su\s+'
-  'chmod\s+[0-7]{3,4}\s+/'
-  'chown\s'
-  'useradd'
-  'userdel'
-  'usermod'
-  'passwd\s'
-  'groupadd'
-  'groupdel'
-  'curl.*-X.*POST'
-  'curl.*-X.*DELETE'
-  'curl.*-X.*PUT'
-  'wget.*--spider'
-  'kill\s+-9'
-  'killall\s'
-  'pkill\s'
-  'systemctl\s+start'
-  'systemctl\s+stop'
-  'systemctl\s+restart'
-  'service\s'
-  'init\.d'
-  'apt-get\s+install'
-  'apt-get\s+remove'
-  'yum\s+install'
-  'yum\s+remove'
-  'brew\s+install'
-  'brew\s+uninstall'
-  'pip\s+install'
-  'npm\s+install\s+-g'
-  'docker\s+run.*-it'
-  'docker\s+exec'
-  'docker\s+ps'
-  'docker\s+stop'
-  'docker\s+rm'
-  'eval\s+'
-  'exec\s+'
-  'source\s+/.*\.sh'
-  '>\s*/dev/sda'
-  'dd\s+'
-)
-
-for pattern in "${RISKY_PATTERNS[@]}"; do
-  if [[ "$COMMAND" =~ $pattern ]]; then
-    echo "$TIMESTAMP RISKY: $COMMAND (matched risky pattern: $pattern)" >> "$LOG_FILE"
-    output_result "false" "High-risk command blocked: requires explicit allowance"
-    exit 0
-  fi
-done
-
-# SUSPICIOUS patterns - DENY by default
-SUSPICIOUS_PATTERNS=(
-  '\$\(.*\$\('
-  '`.*`'
-  '>\s*&'
-  '>&\s*2'
-  '>.*2>&1'
-  'nc\s+'
-  'ncat\s+'
-  'netcat'
-  'socat\s+'
-  'telnet\s+'
-  'ssh\s+'
-  'scp\s+'
-  'sftp\s+'
-  'tar\s+.*--restore-times'
-  'tar\s+.*--mode='
-  'unzip\s+-o'
-  'rar\s+x'
-  '|.*base64'
-  '|.*rot13'
-  'xxd\s+'
-  'od\s+-A\s+x'
-  'hexdump'
-)
-
-for pattern in "${SUSPICIOUS_PATTERNS[@]}"; do
-  if [[ "$COMMAND" =~ $pattern ]]; then
-    echo "$TIMESTAMP SUSPICIOUS: $COMMAND (matched suspicious pattern: $pattern)" >> "$LOG_FILE"
-    output_result "false" "Suspicious command blocked: possible obfuscation or redirection"
-    exit 0
-  fi
-done
-
-# Commands with pipes and redirection - ALLOW if safe
-if [[ "$COMMAND" =~ \| ]] || [[ "$COMMAND" =~ '>' ]]; then
-  # Redirection check: ensure not redirecting to system files
-  if [[ "$COMMAND" =~ '>.*(/etc/|/sys/|/proc/|/dev/|/boot/|/root/)' ]]; then
-    echo "$TIMESTAMP DENY: $COMMAND (redirection to system directory)" >> "$LOG_FILE"
-    output_result "false" "Redirection to protected directory blocked"
-    exit 0
-  fi
-
-  # Allow if all parts are safe
-  IFS='|' read -ra PARTS <<< "$COMMAND"
-  for PART in "${PARTS[@]}"; do
-    PART="${PART// /}"
-    PART="${PART%% *}"  # Get first word
-    if [[ "$PART" =~ ^(curl|wget|grep|sed|awk|sort|uniq|head|tail|wc|jq|python|node) ]]; then
-      continue
-    else
-      echo "$TIMESTAMP SUSPICIOUS_PIPE: $COMMAND (unsafe part: $PART)" >> "$LOG_FILE"
-      output_result "false" "Suspicious pipe detected: unsafe component"
-      exit 0
-    fi
-  done
-
-  echo "$TIMESTAMP ALLOW_PIPED: $COMMAND" >> "$LOG_FILE"
-  output_result "true" "Piped command allowed (all components safe)"
-  exit 0
+# A Bash call with no command means the event did not look the way we expect.
+if [ -z "$COMMAND" ]; then
+  hook_deny "bash-guard: the Bash event carried no command, so it could not be inspected. Blocking (fail-closed)."
 fi
 
-# Default: DENY (fail-closed)
-echo "$TIMESTAMP DENY_DEFAULT: $COMMAND (no matching rule)" >> "$LOG_FILE"
-output_result "false" "Command not explicitly allowed"
-exit 0
+# --- 1. destructive: always deny --------------------------------------------
+# shellcheck disable=SC2016  # these are regexes; $HOME is matched literally
+DESTRUCTIVE_PATTERNS=(
+  'rm[[:space:]]+(-[[:alnum:]]*[[:space:]]+)*-?[[:alnum:]]*[rR][[:alnum:]]*[[:space:]]+/[[:space:]]*$'
+  'rm[[:space:]]+-[[:alnum:]]*[rR][[:alnum:]]*[[:space:]]+(/|\*|~|\$HOME)'
+  'rm[[:space:]]+-[[:alnum:]]*[rR][[:alnum:]]*[[:space:]]+--no-preserve-root'
+  'dd[[:space:]]+.*of=/dev/(sd|nvme|disk|hd)'
+  'dd[[:space:]]+if=/dev/(zero|random|urandom)[[:space:]]+of=/'
+  '(^|[^[:alnum:]_-])mkfs(\.[[:alnum:]]+)?([^[:alnum:]_-]|$)'
+  '(^|[^[:alnum:]_-])(fdisk|parted|dmsetup|cryptsetup)([^[:alnum:]_-]|$)'
+  '(^|[;&|][[:space:]]*)[[:space:]]*(sudo[[:space:]]+)?(shutdown|reboot|poweroff|halt)([[:space:]]|$)'
+  'systemctl[[:space:]]+(poweroff|reboot|halt)'
+  'chmod[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*777[[:space:]]+/[[:space:]]*$'
+  'chown[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*[^[:space:]]+[[:space:]]+/[[:space:]]*$'
+  '>[[:space:]]*/etc/(passwd|shadow|sudoers)'
+  '(curl|wget)[[:space:]][^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba)?sh'
+  ':\(\)[[:space:]]*\{.*\|.*&.*\};:'
+  'git[[:space:]]+push[[:space:]]+.*--force(-with-lease)?[[:space:]]+[^[:space:]]+[[:space:]]+(main|master)([^[:alnum:]_/-]|$)'
+  '(^|[;&|][[:space:]]*)[[:space:]]*history[[:space:]]+-c([[:space:]]|$)'
+)
+
+if hook_matches_any "$COMMAND" "${DESTRUCTIVE_PATTERNS[@]}"; then
+  hook_deny "bash-guard: destructive command blocked (matched /${HOOK_MATCHED_PATTERN}/). If this is genuinely intended, run it yourself outside Claude Code."
+fi
+
+# --- 2. high impact: ask ------------------------------------------------------
+# These are legitimate often enough that denying them outright is wrong, but
+# they change the machine or reach the network, so the user should see them.
+HIGH_IMPACT_PATTERNS=(
+  '(^|[;&|][[:space:]]*)sudo[[:space:]]'
+  '(^|[;&|][[:space:]]*)(su|doas|pkexec)[[:space:]]'
+  '(^|[^[:alnum:]_-])(useradd|userdel|usermod|groupadd|groupdel|passwd)[[:space:]]'
+  'systemctl[[:space:]]+(start|stop|restart|enable|disable)'
+  '(^|[^[:alnum:]_-])(launchctl|service)[[:space:]]'
+  '(apt|apt-get|yum|dnf|pacman)[[:space:]]+(install|remove|purge)'
+  'brew[[:space:]]+(install|uninstall|remove)'
+  'npm[[:space:]]+install[[:space:]]+(-g|--global)'
+  '(^|[^[:alnum:]_-])(kill|killall|pkill)[[:space:]]+(-9|-KILL)'
+  'docker[[:space:]]+(system[[:space:]]+prune|volume[[:space:]]+rm|rm[[:space:]]+-f)'
+  '(^|[;&|][[:space:]]*)[[:space:]]*(nc|ncat|netcat|socat|telnet)[[:space:]]'
+  'crontab[[:space:]]+-'
+  '(^|[^[:alnum:]_-])chmod[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*777([^[:digit:]]|$)'
+  '(^|[^[:alnum:]_-])git[[:space:]]+(reset[[:space:]]+--hard|clean[[:space:]]+-[[:alnum:]]*[fd])'
+  '(^|[^[:alnum:]_-])git[[:space:]]+push[[:space:]]+.*--force'
+  '>[[:space:]]*/dev/(sd|nvme|disk)'
+)
+
+if hook_matches_any "$COMMAND" "${HIGH_IMPACT_PATTERNS[@]}"; then
+  hook_ask "bash-guard: high-impact command (matched /${HOOK_MATCHED_PATTERN}/). Review it before allowing."
+fi
+
+# --- 3. optional strict mode -------------------------------------------------
+if [ "${BASH_GUARD_STRICT:-0}" = "1" ]; then
+  ALLOW_PATTERNS=(
+    '^[[:space:]]*(echo|printf|pwd|ls|cd|cat|head|tail|less|file|stat)[[:space:]]*'
+    '^[[:space:]]*(grep|rg|sed|awk|sort|uniq|wc|cut|tr|jq|yq)[[:space:]]*'
+    '^[[:space:]]*(find|tree|du|df|date|whoami|hostname|env|which|type)[[:space:]]*'
+    '^[[:space:]]*(mkdir|touch|cp|mv|ln|diff|tar|zip|unzip)[[:space:]]'
+    '^[[:space:]]*git[[:space:]]'
+    '^[[:space:]]*(npm|pnpm|yarn|npx|node)[[:space:]]'
+    '^[[:space:]]*(python|python3|pip|pip3|uv|ruff|mypy|pytest|pyright)[[:space:]]'
+    '^[[:space:]]*(cargo|rustc|go|make|cmake|gcc|clang|java|javac|mvn|gradle)[[:space:]]'
+    '^[[:space:]]*(docker|docker-compose|kubectl)[[:space:]]'
+    '^[[:space:]]*(ollama|curator)[[:space:]]*'
+    '^[[:space:]]*(curl|wget|http|httpie)[[:space:]]'
+    '^[[:space:]]*(psql|mysql|sqlite3|mongosh|redis-cli)[[:space:]]'
+  )
+  if ! hook_matches_any "$COMMAND" "${ALLOW_PATTERNS[@]}"; then
+    hook_deny "bash-guard: strict mode is on and this command is not on the allow list. Unset BASH_GUARD_STRICT to fall back to the normal permission flow."
+  fi
+fi
+
+# --- 4. no opinion ------------------------------------------------------------
+hook_pass

@@ -1,240 +1,109 @@
-#!/bin/bash
-# write-guard.sh - PreToolUse hook to block protected file writes
-# Detects secrets and prevents writing to system files
+#!/usr/bin/env bash
+# write-guard.sh - PreToolUse hook that blocks writes to protected paths and
+# writes whose content looks like a real credential.
+#
+# Event:  PreToolUse, matcher "Write|Edit|MultiEdit|NotebookEdit"
+# Input:  JSON on stdin; .tool_input.file_path plus .tool_input.content,
+#         .tool_input.new_string or .tool_input.edits[].new_string
+# Output: a PreToolUse permissionDecision, or nothing at all
+#
+# The credential patterns deliberately require a literal-looking value. Matching
+# the bare word "password" would block this very file, every .env.example and
+# most security documentation.
 
 set -euo pipefail
 
-LOG_DIR="${LOG_DIR:-./.claude/logs}"
-mkdir -p "$LOG_DIR"
+HOOK_NAME="write-guard"
+# shellcheck source=hooks/scripts/lib/hook-common.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/hook-common.sh"
 
-TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-LOG_FILE="$LOG_DIR/write-guard.log"
+hook_init
 
-# Input from Claude Code
-FILE_PATH="${1:-}"
-CONTENT="${2:-}"
-OPERATION="${3:-write}"
+TOOL_NAME="$(hook_field '.tool_name')"
 
-# Output result as JSON
-output_result() {
-  local allowed="$1"
-  local reason="$2"
-  local risk_level="${3:-low}"
+case "$TOOL_NAME" in
+  Write | Edit | MultiEdit | NotebookEdit) ;;
+  *) hook_pass ;;
+esac
 
-  cat <<EOF
-{
-  "allowed": $allowed,
-  "reason": "$reason",
-  "risk_level": "$risk_level",
-  "timestamp": "$TIMESTAMP",
-  "file": "$FILE_PATH",
-  "operation": "$OPERATION"
-}
-EOF
-}
+FILE_PATH="$(hook_field '.tool_input.file_path')"
+if [ -z "$FILE_PATH" ]; then
+  hook_deny "write-guard: the $TOOL_NAME event carried no file_path, so it could not be inspected. Blocking (fail-closed)."
+fi
 
-# Protected system files - ALWAYS DENY writes
-PROTECTED_FILES=(
-  "/etc/passwd"
-  "/etc/shadow"
-  "/etc/group"
-  "/etc/gshadow"
-  "/etc/sudoers"
-  "/etc/sudoers.d/"
-  "/.ssh/"
-  "/.gnupg/"
-  "/root/"
-  "/root/.bashrc"
-  "/root/.bash_profile"
-  "/root/.ssh/"
-  "/.aws/credentials"
-  "/.aws/config"
-  "/.docker/config.json"
-  "/var/lib/chromadb/"
-  "/var/lib/ollama/"
-  "/var/log/auth.log"
-  "/var/log/syslog"
-  "/boot/"
-  "/sys/"
-  "/proc/"
-  "/dev/"
-  "/usr/bin/"
-  "/usr/sbin/"
-  "/usr/local/bin/"
-  "/usr/local/sbin/"
-  "/etc/cron"
-  "/etc/crontab"
-  "/.env"
-  "/.env.local"
-  "/.env.production"
-  "/.git/config"
-  "/.gitconfig"
+# Content lives under a different key per tool. Collect whatever is there.
+CONTENT="$(printf '%s' "$HOOK_INPUT" | jq -r '
+  [ .tool_input.content?,
+    .tool_input.new_string?,
+    .tool_input.new_source?,
+    (.tool_input.edits? // [] | .[]?.new_string?)
+  ] | map(select(. != null)) | join("\n")
+' 2>/dev/null)" || CONTENT=""
+
+# --- protected paths ----------------------------------------------------------
+PROTECTED_PATTERNS=(
+  '^/etc/'
+  '^/(usr|bin|sbin|boot|sys|proc|dev)/'
+  '^/System/'
+  '^/Library/LaunchDaemons/'
+  '(^|/)\.ssh/'
+  '(^|/)\.gnupg/'
+  '(^|/)\.aws/(credentials|config)$'
+  '(^|/)\.docker/config\.json$'
+  '(^|/)\.netrc$'
+  '(^|/)\.npmrc$'
+  '(^|/)\.pypirc$'
+  '(^|/)\.git/config$'
+  '(^|/)\.env(\.[[:alnum:]]+)?$'
+  '\.(pem|key|p12|pfx|jks|keystore)$'
+  '(^|/)id_(rsa|dsa|ecdsa|ed25519)$'
 )
 
-# Check protected files
-for protected in "${PROTECTED_FILES[@]}"; do
-  if [[ "$FILE_PATH" == "$protected"* ]]; then
-    echo "$TIMESTAMP DENY: $OPERATION $FILE_PATH (protected file)" >> "$LOG_FILE"
-    output_result "false" "Protected system file cannot be modified" "critical"
-    exit 0
-  fi
-done
-
-# Secret patterns - DETECT and BLOCK
-SECRET_PATTERNS=(
-  'PRIVATE KEY'
-  'private_key'
-  'private key'
-  'BEGIN RSA PRIVATE KEY'
-  'BEGIN DSA PRIVATE KEY'
-  'BEGIN OPENSSH PRIVATE KEY'
-  'BEGIN ENCRYPTED PRIVATE KEY'
-  'password.*[=:]'
-  'passwd.*[=:]'
-  'secret.*[=:]'
-  'api_key'
-  'apikey'
-  'api-key'
-  'access_token'
-  'accesstoken'
-  'refresh_token'
-  'refreshtoken'
-  'oauth_token'
-  'client_secret'
-  'client_id.*secret'
-  'aws_access_key'
-  'aws_secret'
-  'AKIA[0-9A-Z]\{16\}'  # AWS key pattern
-  'ghp_[0-9A-Za-z]\{36\}'  # GitHub PAT pattern
-  'github.*token'
-  'database_password'
-  'db_password'
-  'db_url.*password'
-  'DATABRICK_HOST'
-  'DATABRICK_TOKEN'
-  'OPENAI_API_KEY'
-  'ANTHROPIC_API_KEY'
-  'REPLICATE_API_KEY'
-  'STRIPE_API_KEY'
-  'STRIPE_SECRET_KEY'
-  'mongodb.*password'
-  'mysql.*password'
-  'postgres.*password'
-  'redis.*password'
-)
-
-for pattern in "${SECRET_PATTERNS[@]}"; do
-  if [[ "$CONTENT" =~ $pattern ]]; then
-    echo "$TIMESTAMP DENY: $OPERATION $FILE_PATH (contains secrets: $pattern)" >> "$LOG_FILE"
-    output_result "false" "Content contains sensitive credentials or secrets" "critical"
-    exit 0
-  fi
-done
-
-# Suspicious binary patterns - BLOCK
-if [[ "$CONTENT" =~ $'\x00' ]]; then
-  echo "$TIMESTAMP DENY: $OPERATION $FILE_PATH (binary content)" >> "$LOG_FILE"
-  output_result "false" "Cannot write binary content" "high"
-  exit 0
-fi
-
-# Blocked file extensions
-BLOCKED_EXTENSIONS=(
-  ".exe"
-  ".dll"
-  ".so"
-  ".dylib"
-  ".pyc"
-  ".o"
-  ".a"
-  ".bin"
-  ".iso"
-  ".dmg"
-  ".elf"
-  ".com"
-)
-
-for ext in "${BLOCKED_EXTENSIONS[@]}"; do
-  if [[ "$FILE_PATH" == *"$ext" ]]; then
-    echo "$TIMESTAMP DENY: $OPERATION $FILE_PATH (blocked extension)" >> "$LOG_FILE"
-    output_result "false" "Binary file extension not allowed" "high"
-    exit 0
-  fi
-done
-
-# Dangerous shell scripts
-if [[ "$FILE_PATH" == *.sh ]] || [[ "$FILE_PATH" == *.bash ]]; then
-  # Check for dangerous patterns in shell scripts
-  if [[ "$CONTENT" =~ rm\ -rf\ / ]] || \
-     [[ "$CONTENT" =~ dd\ if=/dev/zero ]] || \
-     [[ "$CONTENT" =~ mkfs ]] || \
-     [[ "$CONTENT" =~ shutdown|reboot|poweroff ]]; then
-    echo "$TIMESTAMP DENY: $OPERATION $FILE_PATH (dangerous shell script)" >> "$LOG_FILE"
-    output_result "false" "Shell script contains dangerous commands" "critical"
-    exit 0
+# .env.example and friends are templates, not secrets.
+if ! [[ "$FILE_PATH" =~ \.(example|sample|template|dist)$ ]]; then
+  if hook_matches_any "$FILE_PATH" "${PROTECTED_PATTERNS[@]}"; then
+    hook_deny "write-guard: '$FILE_PATH' is a protected path (matched /${HOOK_MATCHED_PATTERN}/). Edit it yourself if you really mean to."
   fi
 fi
 
-# Size check - prevent huge file writes
-MAX_FILE_SIZE=$((100 * 1024 * 1024))  # 100 MB
-CONTENT_SIZE=${#CONTENT}
-
-if [ "$CONTENT_SIZE" -gt "$MAX_FILE_SIZE" ]; then
-  echo "$TIMESTAMP DENY: $OPERATION $FILE_PATH (content too large: $CONTENT_SIZE bytes)" >> "$LOG_FILE"
-  output_result "false" "Content exceeds maximum file size (100 MB)" "high"
-  exit 0
+# --- binary artefacts ---------------------------------------------------------
+if [[ "$FILE_PATH" =~ \.(exe|dll|so|dylib|o|a|bin|iso|dmg|elf|pyc|class)$ ]]; then
+  hook_deny "write-guard: refusing to write the binary artefact '$FILE_PATH'. Build it from source instead."
 fi
 
-# Path traversal check
-if [[ "$FILE_PATH" == *"/../"* ]] || [[ "$FILE_PATH" == *./* ]]; then
-  echo "$TIMESTAMP SUSPICIOUS: $OPERATION $FILE_PATH (path traversal pattern)" >> "$LOG_FILE"
-  output_result "false" "Path traversal pattern detected" "high"
-  exit 0
-fi
-
-# Check for absolute paths (generally safer)
-if [[ "$FILE_PATH" == /* ]]; then
-  # Writing to root-level absolute paths needs caution
-  if [[ "$FILE_PATH" != /tmp/* ]] && \
-     [[ "$FILE_PATH" != /home/* ]] && \
-     [[ "$FILE_PATH" != /var/tmp/* ]] && \
-     [[ "$FILE_PATH" != /sessions/* ]] && \
-     [[ "$FILE_PATH" != */.claude/* ]]; then
-    echo "$TIMESTAMP DENY: $OPERATION $FILE_PATH (absolute path outside safe dirs)" >> "$LOG_FILE"
-    output_result "false" "Absolute paths outside safe directories not allowed" "high"
-    exit 0
-  fi
-fi
-
-# Safe operations - ALLOW
-if [[ "$OPERATION" == "write" ]] || [[ "$OPERATION" == "edit" ]] || [[ "$OPERATION" == "create" ]]; then
-  # Check if file is in a safe directory
-  SAFE_DIRS=(
-    "./"
-    "./src/"
-    "./tests/"
-    "./docs/"
-    "./.claude/"
-    "/tmp/"
-    "/sessions/"
+# --- credential-shaped content ------------------------------------------------
+# Skip when there is nothing to inspect (an Edit that only deletes, say).
+if [ -n "$CONTENT" ]; then
+  # High-confidence literal tokens: these shapes are never placeholders.
+  TOKEN_PATTERNS=(
+    'AKIA[0-9A-Z]{16}'
+    'gh[pousr]_[A-Za-z0-9]{36,}'
+    'github_pat_[A-Za-z0-9_]{60,}'
+    'sk-ant-[A-Za-z0-9_-]{20,}'
+    'sk-[A-Za-z0-9]{32,}'
+    'xox[baprs]-[A-Za-z0-9-]{10,}'
+    'AIza[0-9A-Za-z_-]{35}'
+    '-----BEGIN[[:space:]]+([A-Z]+[[:space:]]+)?PRIVATE[[:space:]]+KEY-----'
+    'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
   )
+  if hook_matches_any "$CONTENT" "${TOKEN_PATTERNS[@]}"; then
+    hook_deny "write-guard: the content of '$FILE_PATH' contains what looks like a live credential (matched /${HOOK_MATCHED_PATTERN}/). Move it to an environment variable."
+  fi
 
-  ALLOWED=0
-  for safe_dir in "${SAFE_DIRS[@]}"; do
-    if [[ "$FILE_PATH" == "$safe_dir"* ]] || [[ "$FILE_PATH" == *"$safe_dir"* ]]; then
-      ALLOWED=1
-      break
+  # Assignments with a literal value. Placeholders and indirection are excluded
+  # below so that examples and real code keep working.
+  #
+  # Matched against a lowercased copy: bash regexes are case-sensitive, and the
+  # real-world spelling is DB_PASSWORD or API_KEY far more often than not.
+  CONTENT_LC="$(printf '%s' "$CONTENT" | tr '[:upper:]' '[:lower:]')"
+  ASSIGN_RE='(password|passwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret)[[:alnum:]_]*[[:space:]]*[:=][[:space:]]*.?["'"'"']([^"'"'"']{8,})["'"'"']'
+  if [[ "$CONTENT_LC" =~ $ASSIGN_RE ]]; then
+    VALUE="${BASH_REMATCH[2]}"
+    PLACEHOLDER_RE='(^\$|^\{\{|\$\{|os\.getenv|process\.env|getenv|^your[-_]|^my[-_]|^test|^dummy|^sample|^example|^changeme|^xxx|^\.\.\.|^<|^placeholder|^redacted|^\*+$)'
+    if ! [[ "$VALUE" =~ $PLACEHOLDER_RE ]]; then
+      hook_deny "write-guard: '$FILE_PATH' assigns a literal credential value. Read it from the environment instead of hardcoding it."
     fi
-  done
-
-  if [ $ALLOWED -eq 1 ]; then
-    echo "$TIMESTAMP ALLOW: $OPERATION $FILE_PATH (safe directory)" >> "$LOG_FILE"
-    output_result "true" "File write allowed in safe directory" "low"
-    exit 0
   fi
 fi
 
-# Default: DENY (fail-closed)
-echo "$TIMESTAMP DENY_DEFAULT: $OPERATION $FILE_PATH (not in safe location)" >> "$LOG_FILE"
-output_result "false" "File write not allowed: path not in safe directory" "medium"
-exit 0
+hook_pass
