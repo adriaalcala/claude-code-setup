@@ -1,5 +1,7 @@
 # claude-code-setup
 
+[![CI](https://github.com/adriaalcala/claude-code-setup/actions/workflows/ci.yml/badge.svg)](https://github.com/adriaalcala/claude-code-setup/actions/workflows/ci.yml)
+
 My working configuration for [Claude Code](https://claude.com/claude-code): subagents, hooks,
 skills, slash commands and language rules, extracted from a real day-to-day setup and published
 as a reference.
@@ -27,6 +29,8 @@ and they deny by default when something looks dangerous or ambiguous.
 │       └── lib/  shared stdin/exit-code helpers
 ├── skills/     20 skills (SKILL.md + assets for browser-uat)
 ├── rules/      Language-specific coding standards (Python, TypeScript)
+├── tests/
+│   └── hooks/  recorded hook events + a contract test runner
 └── examples/   settings.json and CLAUDE.md templates
 ```
 
@@ -81,7 +85,7 @@ can block**: if `jq` is missing or the event does not parse, a `PreToolUse` hook
 letting the call through. Hooks on events that cannot block degrade to a silent no-op instead, since
 exiting non-zero there produces noise and blocks nothing.
 
-Two portability rules the guards depend on:
+Two portability rules the guards depend on, both enforced by the test suite:
 
 - `bash`'s `[[ =~ ]]` is POSIX ERE. `\s`, `\d` and `\b` are GNU extensions that **silently fail to
   match** on macOS. Every pattern uses `[[:space:]]`, `[[:digit:]]` and explicit boundaries.
@@ -186,6 +190,40 @@ restated so a standard lives in exactly one place.
 
 ---
 
+## Testing the hooks
+
+A guard that silently stops guarding is worse than no guard, so the hooks have a contract test
+suite. `tests/hooks/fixtures/` holds recorded Claude Code events — a destructive command, an
+ordinary one, a write carrying a live AWS key, a push to `main` — and the runner feeds each one to
+the relevant hook and asserts on **the exit code and the decision it emits**.
+
+```bash
+tests/hooks/run-tests.sh      # add -v to print each decision object
+```
+
+```
+bash-guard (PreToolUse / Bash)
+  PASS  destructive rm -rf / is denied        exit=0 decision=deny
+  PASS  sudo apt-get install asks             exit=0 decision=ask
+  PASS  ordinary ls passes through            exit=0 decision=none
+  PASS  malformed event blocks fail-closed    exit=2 decision=none
+```
+
+The runner builds a throwaway git repository on `main` and substitutes it for the `__CWD__`
+placeholder in every fixture, so the git-aware hooks inspect real state and the results are the same
+on a laptop and in CI. Logs and work-log writes are redirected into the sandbox, so running the
+suite never touches `~/.claude`.
+
+CI (`.github/workflows/ci.yml`) runs shellcheck at `-S style` over every hook, runs the suite on
+**both Ubuntu and macOS** — the BSD regex engine is what makes `\s` and `\b` fail, so a Linux-only
+run would miss exactly the bug this suite exists to catch — validates every JSON file, and fails the
+build on a stale model ID or an invented tool name.
+
+To add a case: drop an event JSON in `tests/hooks/fixtures/` (use `__CWD__` where a path is needed)
+and add one `check` line naming the hook, the expected exit code and the expected decision.
+
+---
+
 ## Installation
 
 Requires [Claude Code](https://claude.com/claude-code) and `jq` — the hooks parse their event with
@@ -206,7 +244,11 @@ chmod +x ~/.claude/hooks/scripts/*.sh
 ```
 
 `hooks/scripts/lib/hook-common.sh` has to come along — each hook sources it relative to its own
-path.
+path. Verify the copy before wiring it up:
+
+```bash
+tests/hooks/run-tests.sh
+```
 
 `git-branch-guard.sh` denies commits on `main`, which is wrong for a repository that works on trunk.
 Turn it off per repository with `export GIT_BRANCH_GUARD=off`, or narrow it with

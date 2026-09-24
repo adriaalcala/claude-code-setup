@@ -1,0 +1,8 @@
+{
+  "session_id": "test-session",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "__CWD__",
+  "hook_event_name": "SessionStart",
+  "model": "claude-opus-5",
+  "startup_reason": "startup"
+}

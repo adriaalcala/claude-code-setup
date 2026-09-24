@@ -1,0 +1,11 @@
+{
+  "session_id": "test-session",
+  "cwd": "__CWD__",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "uv add httpx",
+    "description": "Add httpx"
+  },
+  "tool_use_id": "toolu_test15"
+}

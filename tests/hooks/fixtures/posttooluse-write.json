@@ -1,0 +1,12 @@
+{
+  "session_id": "test-session",
+  "cwd": "__CWD__",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "__CWD__/src/utils.py",
+    "content": "def add(a,b):\n  return a+b\n"
+  },
+  "tool_output": "File created successfully",
+  "tool_use_id": "toolu_test16"
+}

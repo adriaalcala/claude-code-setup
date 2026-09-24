@@ -1,0 +1,11 @@
+{
+  "session_id": "test-session",
+  "cwd": "__CWD__",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "/etc/hosts",
+    "content": "127.0.0.1 example.com\n"
+  },
+  "tool_use_id": "toolu_test07"
+}

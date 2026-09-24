@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+          shellcheck --version
+
+      - name: Lint hooks and test runner
+        run: |
+          shellcheck -x -S style \
+            hooks/scripts/*.sh \
+            hooks/scripts/lib/*.sh \
+            tests/hooks/run-tests.sh \
+            skills/browser-uat/scripts/chrome-debug.sh
+
+  hook-tests:
+    name: hook contract tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS matters here: its BSD regex engine rejects the GNU \s, \d and \b
+        # extensions, which is exactly how the original hooks stopped matching.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check jq is available
+        run: jq --version
+
+      - name: Run hook contract tests
+        run: bash tests/hooks/run-tests.sh
+
+  json-valid:
+    name: validate JSON
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse every JSON file except the deliberately malformed fixture
+        run: |
+          status=0
+          while IFS= read -r f; do
+            case "$f" in
+              ./tests/hooks/fixtures/malformed.json) continue ;;
+            esac
+            if ! jq -e . "$f" >/dev/null 2>&1; then
+              echo "invalid JSON: $f"
+              status=1
+            fi
+          done < <(find . -name '*.json' -not -path './.git/*')
+          exit $status
+
+      - name: The malformed fixture must stay malformed
+        run: |
+          if jq -e . tests/hooks/fixtures/malformed.json >/dev/null 2>&1; then
+            echo "malformed.json parsed successfully; the fail-closed test is no longer meaningful"
+            exit 1
+          fi
+
+  frontmatter:
+    name: validate agent frontmatter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No stale model IDs or invented tool names
+        run: |
+          status=0
+          if grep -rn 'claude-opus-4\|claude-3-\|claude-sonnet-4' agents skills commands 2>/dev/null; then
+            echo "stale model identifier found; use the opus/sonnet/haiku aliases"
+            status=1
+          fi
+          if grep -rn 'claude-fetch\|claude-search\|claude-list-files\|claude-read\|claude-write\|claude-edit' \
+             agents skills commands 2>/dev/null; then
+            echo "invented tool name found; use Read/Write/Edit/Grep/Glob/Bash/WebFetch/Task"
+            status=1
+          fi
+          exit $status

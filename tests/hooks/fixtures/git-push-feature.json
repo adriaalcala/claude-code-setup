@@ -1,0 +1,11 @@
+{
+  "session_id": "test-session",
+  "cwd": "__CWD__",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git push origin feature/hook-rewrite",
+    "description": "Push the feature branch"
+  },
+  "tool_use_id": "toolu_test12"
+}

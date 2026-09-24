@@ -1,0 +1,11 @@
+{
+  "session_id": "test-session",
+  "cwd": "__CWD__",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "pip install https://files.example.com/pkg-1.0.tar.gz",
+    "description": "Install a package"
+  },
+  "tool_use_id": "toolu_test14"
+}

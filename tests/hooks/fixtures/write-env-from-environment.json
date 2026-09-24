@@ -1,0 +1,11 @@
+{
+  "session_id": "test-session",
+  "cwd": "__CWD__",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "__CWD__/src/settings.py",
+    "content": "import os\n\nAPI_KEY = os.getenv(\"API_KEY\")\nDB_PASSWORD = os.environ[\"DB_PASSWORD\"]\n"
+  },
+  "tool_use_id": "toolu_test10"
+}

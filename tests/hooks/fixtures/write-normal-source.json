@@ -1,0 +1,11 @@
+{
+  "session_id": "test-session",
+  "cwd": "__CWD__",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "__CWD__/src/utils.py",
+    "content": "from __future__ import annotations\n\n\ndef add(a: int, b: int) -> int:\n    return a + b\n"
+  },
+  "tool_use_id": "toolu_test08"
+}
