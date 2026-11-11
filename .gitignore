@@ -14,6 +14,10 @@
 # It carries AWS's published example key, not a live credential.
 !tests/hooks/fixtures/write-secret-file.json
 
+# Terraform files that declare secret *references* (secret_id), never values, are
+# tracked. Variable files such as secrets.tfvars stay ignored.
+!*secret*.tf
+
 # Real (non-example) local configs
 skills/browser-uat/configs/profiles.json
 settings.local.json

@@ -151,6 +151,8 @@ check "write to /etc is denied"             write-guard.sh write-protected-path.
 check "ordinary source file passes"         write-guard.sh write-normal-source.json        0 none
 check ".env.example passes"                 write-guard.sh write-env-example.json          0 none
 check "os.getenv indirection passes"        write-guard.sh write-env-from-environment.json 0 none
+check "Terraform secret_id reference passes" write-guard.sh write-terraform-reference.json 0 none
+check "secret_data literal denied after a reference" write-guard.sh write-terraform-literal-after-reference.json 0 deny
 check "Bash event is not our business"      write-guard.sh bash-safe-ls.json               0 none
 check "malformed event blocks fail-closed"  write-guard.sh malformed.json                  2 none
 echo
