@@ -96,14 +96,25 @@ if [ -n "$CONTENT" ]; then
   # Matched against a lowercased copy: bash regexes are case-sensitive, and the
   # real-world spelling is DB_PASSWORD or API_KEY far more often than not.
   CONTENT_LC="$(printf '%s' "$CONTENT" | tr '[:upper:]' '[:lower:]')"
-  ASSIGN_RE='(password|passwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret)[[:alnum:]_]*[[:space:]]*[:=][[:space:]]*.?["'"'"']([^"'"'"']{8,})["'"'"']'
-  if [[ "$CONTENT_LC" =~ $ASSIGN_RE ]]; then
-    VALUE="${BASH_REMATCH[2]}"
-    PLACEHOLDER_RE='(^\$|^\{\{|\$\{|os\.getenv|process\.env|getenv|^your[-_]|^my[-_]|^test|^dummy|^sample|^example|^changeme|^xxx|^\.\.\.|^<|^placeholder|^redacted|^\*+$)'
-    if ! [[ "$VALUE" =~ $PLACEHOLDER_RE ]]; then
+  # The keyword may be followed by a suffix (secret_id, api_key_name, ...). A
+  # suffix that names a *reference* to a secret, rather than holding one, is
+  # exempt: Terraform's `secret_id = "stripe-api-key"` declares where a secret
+  # lives, it does not contain it. `secret_data = "..."` still denies.
+  ASSIGN_RE='(password|passwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret)([[:alnum:]_]*)[[:space:]]*[:=][[:space:]]*.?["'"'"']([^"'"'"']{8,})["'"'"']'
+  REFERENCE_SUFFIX_RE='^_?(id|name|ref|arn|path|uri|url|version|label|manager|resource)$'
+  PLACEHOLDER_RE='(^\$|^\{\{|\$\{|os\.getenv|process\.env|getenv|^your[-_]|^my[-_]|^test|^dummy|^sample|^example|^changeme|^xxx|^\.\.\.|^<|^placeholder|^redacted|^\*+$)'
+  # Scan every assignment, not just the first: an exempt reference must not hide
+  # a literal credential written later in the same content.
+  REST="$CONTENT_LC"
+  while [[ "$REST" =~ $ASSIGN_RE ]]; do
+    MATCH="${BASH_REMATCH[0]}"
+    SUFFIX="${BASH_REMATCH[2]}"
+    VALUE="${BASH_REMATCH[3]}"
+    if ! [[ "$SUFFIX" =~ $REFERENCE_SUFFIX_RE ]] && ! [[ "$VALUE" =~ $PLACEHOLDER_RE ]]; then
       hook_deny "write-guard: '$FILE_PATH' assigns a literal credential value. Read it from the environment instead of hardcoding it."
     fi
-  fi
+    REST="${REST#*"$MATCH"}"
+  done
 fi
 
 hook_pass

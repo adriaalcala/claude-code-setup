@@ -1,0 +1,11 @@
+{
+  "session_id": "test-session",
+  "cwd": "__CWD__",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "__CWD__/infra/secrets.tf",
+    "content": "resource \"google_secret_manager_secret\" \"stripe_key\" {\n  secret_id = \"stripe-api-key\"\n\n  replication {\n    auto {}\n  }\n}\n"
+  },
+  "tool_use_id": "toolu_test30"
+}
